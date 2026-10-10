@@ -61,12 +61,13 @@ var webhookVerbs = verbSet(WebhookVerbs())
 // Governing: ADR-0012 (switchboard owns verification; no agent trust downgrade), ADR-0003 (per-source
 // trust model), ADR-0024.
 var webhookTrustModes = map[string]string{
-	"github":  "signed",
-	"stripe":  "signed",
-	"slack":   "signed",
-	"gitea":   "signed",
-	"cairn":   "signed",
-	"generic": "token",
+	"github":    "signed",
+	"stripe":    "signed",
+	"slack":     "signed",
+	"gitea":     "signed",
+	"cairn":     "signed",
+	"generic":   "token",
+	"telemetry": "token",
 }
 
 // SetBaseURL installs the externally-reachable origin used to build the ingest_url returned by

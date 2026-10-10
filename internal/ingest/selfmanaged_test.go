@@ -487,6 +487,25 @@ func TestSummarizeSelfManagedTitleGitea(t *testing.T) {
 	}
 }
 
+// A telemetry delivery titles from its small, well-known envelope (service/signal/severity/summary)
+// and degrades to "telemetry delivery" when the body is not an envelope.
+func TestSummarizeSelfManagedTitleTelemetry(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"full", `{"service":"harness","signal":"metric","severity":"ERROR","summary":"worker wedged"}`, "telemetry harness metric ERROR: worker wedged"},
+		{"message fallback", `{"service":"harness","message":"late heartbeat"}`, "telemetry harness: late heartbeat"},
+		{"no fields", `{}`, "telemetry delivery"},
+		{"not json", `not json`, "telemetry delivery"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summarizeSelfManagedTitle("telemetry", "", []byte(tc.body)); got != tc.want {
+				t.Fatalf("telemetry title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // A self-managed gitea delivery that presents only the GitHub-compatible signature header
 // (X-Hub-Signature-256: sha256=<hex>) verifies too — the operator-configured /webhooks/gitea
 // receiver has always keyed on that header, so both Gitea paths MUST accept it.

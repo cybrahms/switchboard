@@ -78,6 +78,10 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	var deliveryID string
 	if wh.SourceType == routing.SourceCairn {
 		deliveryID = cairnEventID(body)
+	} else if wh.SourceType == "telemetry" {
+		// The station's telemetry relay stamps X-Delivery-Id with a stable signal key, so a
+		// retried error-logging push collapses onto the original todo instead of minting a repeat.
+		deliveryID = r.Header.Get("X-Delivery-Id")
 	} else {
 		deliveryID = r.Header.Get("X-GitHub-Delivery")
 		if deliveryID == "" {
@@ -346,6 +350,36 @@ func verifyGitea(secret string, body []byte, sig string) bool {
 	return hmac.Equal([]byte(expected), []byte(sig))
 }
 
+// summarizeTelemetry builds a legible todo title from a telemetry/error-logging delivery. The
+// station's relay posts a small, well-known envelope (service, signal, severity, summary), so the
+// title carries what the board and the doorbell need without unpacking the todo. It degrades to
+// "telemetry delivery" for a body that does not parse or has no fields.
+func summarizeTelemetry(body []byte) string {
+	var t struct {
+		Service  string `json:"service"`
+		Signal   string `json:"signal"`
+		Severity string `json:"severity"`
+		Summary  string `json:"summary"`
+		Message  string `json:"message"`
+	}
+	if json.Unmarshal(body, &t) != nil {
+		return "telemetry delivery"
+	}
+	label := "telemetry"
+	for _, p := range []string{t.Service, t.Signal, t.Severity} {
+		if p != "" {
+			label += " " + p
+		}
+	}
+	if t.Summary != "" {
+		return label + ": " + t.Summary
+	}
+	if t.Message != "" {
+		return label + ": " + t.Message
+	}
+	return label + " delivery"
+}
+
 // summarizeSelfManaged builds a one-line, legible todo title for a self-managed webhook delivery.
 func summarizeSelfManaged(sourceType string) string {
 	if sourceType == "" {
@@ -389,6 +423,9 @@ func selfManagedEvent(r *http.Request) string {
 func summarizeSelfManagedTitle(sourceType, event string, body []byte) string {
 	if sourceType == routing.SourceCairn {
 		return summarizeCairn(body)
+	}
+	if sourceType == "telemetry" {
+		return summarizeTelemetry(body)
 	}
 	if event == "" {
 		return summarizeSelfManaged(sourceType)
