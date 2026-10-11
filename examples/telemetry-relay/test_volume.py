@@ -52,9 +52,20 @@ class VolumeTests(unittest.TestCase):
         self.write(["request 123 failed", "request 456 failed"])
         self.scan()
         self.assertEqual(len(self.sent), 1)
+
         self.assertEqual(self.sent[0][1]["detail"]["occurrences"], 2)
         self.write(["request 123 failed", "request 456 failed", "request 789 failed"])
         self.scan()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_export_retry_across_window_boundary_still_makes_one_task(self):
+        boundary = (int(time.time() // 900) + 1) * 900
+        self.write(["runtime failure"], boundary - 1)
+        with patch.object(self.relay.time, "time", return_value=boundary - 1):
+            self.scan()
+        self.write(["runtime failure"], boundary + 1)
+        with patch.object(self.relay.time, "time", return_value=boundary + 1):
+            self.scan()
         self.assertEqual(len(self.sent), 1)
 
     def test_budget_is_shared_across_scans_and_expires(self):
@@ -102,7 +113,7 @@ class VolumeTests(unittest.TestCase):
         self.assertFalse(Path(self.relay.STATE_PATH).exists())
         self.scan()
         self.assertEqual(self.sent[0][0], delivery_ids[0])
-        self.assertEqual(len(json.loads(Path(self.relay.STATE_PATH).read_text())), 1)
+        self.assertEqual(sum(k.startswith("group:") for k in json.loads(Path(self.relay.STATE_PATH).read_text())), 1)
 
     def test_dry_run_never_consumes_production_budget(self):
         self.write(["runtime failure"])

@@ -252,7 +252,7 @@ def scan(send):
                                     received < now - MAX_AGE or received > now + 60):
                         stale += 1
                         continue
-                    if e["key"] in seen or e["key"] in occurrence_keys:
+                    if e["key"] in seen or "seen:" + e["key"] in seen or e["key"] in occurrence_keys:
                         continue
                     occurrence_keys.add(e["key"])
                     if GROUP_WINDOW:
@@ -261,21 +261,30 @@ def scan(send):
                         key = stable_key("group", e["service"], e["signal"], e["severity"], fingerprint, bucket)
                     else:
                         key = e["key"]
+                    occurrence_key = e["key"]
                     if key not in groups:
+                        e["_occurrences"] = []
                         e["key"] = key
                         e["detail"] = dict(e["detail"], occurrences=0, windowSeconds=GROUP_WINDOW)
                         groups[key] = e
+                    groups[key]["_occurrences"].append(occurrence_key)
                     groups[key]["detail"]["occurrences"] += 1
     for e in groups.values():
         if e["key"] in seen:
+            if GROUP_WINDOW:
+                seen.update({"seen:" + k: now for k in e["_occurrences"]})
             continue
         # Persisted delivery timestamps enforce the budget across runs and restarts.
         recent = sum(now - value < 3600 for key, value in seen.items()
-                     if not GROUP_WINDOW or key.startswith("group:"))
+                     if key.startswith("group:") or (not GROUP_WINDOW and not key.startswith("seen:")))
         if recent >= MAX_PER_HOUR:
             limited += 1
             continue
         emitted += bool(emit(seen, e, send))
+        if GROUP_WINDOW:
+            seen.update({"seen:" + k: now for k in e["_occurrences"]})
+            if send:
+                save_seen(seen)
     if send:
         save_seen(seen)
     print(f"relay: {found} matching signals; {emitted} {'delivered' if send else 'would send'}; "
