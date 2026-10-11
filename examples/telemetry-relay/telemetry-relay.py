@@ -93,6 +93,9 @@ def iter_trace_errors(body, source_id):
                 status = sp.get("status", {}) or {}
                 if status.get("code") != ERROR_STATUS_CODE:
                     continue
+                attrs = {a["key"]: a.get("value", {}) for a in (sp.get("attributes") or [])}
+                if "agent.tool.name" in attrs:
+                    continue  # a failed tool call is routine agent work, not a station failure
                 yield {
                     "service": safe_text(service, 80),
                     "signal": "trace",

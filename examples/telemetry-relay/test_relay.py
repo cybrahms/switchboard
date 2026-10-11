@@ -88,6 +88,18 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(len(self.received), 1)
         self.assertEqual(self.received[0][1]["severity"], "FATAL")
 
+    def test_tool_call_error_span_is_skipped_but_session_error_is_emitted(self):
+        self.write({"body": {"resourceSpans": [{"scopeSpans": [{"spans": [
+            {"spanId": "tool", "name": "bash", "status": {"code": 2},
+             "attributes": [{"key": "agent.tool.name", "value": {"stringValue": "bash"}}]},
+            {"spanId": "session", "name": "model timeout", "status": {"code": 2},
+             "events": [{"name": "exception", "timeUnixNano": "1"}]}
+        ]}]}]}}, "traces-2026-10-11.000.jsonl")
+        result = self.run_relay("--send")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.received), 1)
+        self.assertEqual(self.received[0][1]["summary"], "model timeout")
+
     def test_compression_preserves_timestamp_free_delivery_identity(self):
         path = self.write(logs(record(timestamp=None)))
         self.assertEqual(self.run_relay("--send").returncode, 0)
