@@ -113,7 +113,10 @@ def main():
                         last = state
                     if state == "done":
                         receipt = mcp.tool("get_todo", {"id": todo["id"]})
-                        if (receipt.get("result") or {}).get("validation") != "acknowledged":
+                        acknowledgement = receipt.get("result")
+                        if isinstance(acknowledgement, str):
+                            acknowledgement = json.loads(acknowledgement)
+                        if not isinstance(acknowledgement, dict) or acknowledgement.get("validation") != "acknowledged":
                             raise RuntimeError("worker completed probe without expected acknowledgement")
                         print("PASS: scheduled relay, durable todo, and worker acknowledgement", flush=True)
                         return 0
