@@ -16,9 +16,9 @@ deprecated, so a breaking change is listed under **Breaking** and carries a note
 ### Added
 
 - **Token-trusted runtime telemetry ingestion.** Self-managed webhooks can use source
-  type `telemetry`, with a bounded severity-aware todo title and stable sender
+  type `telemetry`, with readable severity-aware todo titles and stable sender
   delivery IDs. The operator's source-type ceiling explicitly grants telemetry;
-  invalid or oversized envelopes are rejected before persistence. A standard-library
+  oversized delivery IDs fall back to body-hash deduplication. A standard-library
   [OTLP JSONL relay and validator](examples/telemetry-relay/README.md) handle compressed
   rotations, redaction, retry checkpoints, and severity filtering. The
   [deployment guide](docs/guides/18-telemetry-relay.md) covers grants, worker triage,
