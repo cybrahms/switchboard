@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 
@@ -75,6 +76,52 @@ class VolumeTests(unittest.TestCase):
         (self.root / "traces-test.jsonl").write_text(json.dumps(envelope) + "\n")
         self.scan()
         self.assertEqual([body["summary"] for _, body in self.sent], ["model timeout"])
+
+    def test_failed_delivery_does_not_consume_budget_and_retries_same_group(self):
+        self.write(["runtime failure"])
+        delivery_ids = []
+
+        def fail(request, timeout):
+            delivery_ids.append(request.headers["X-delivery-id"])
+            raise urllib.error.HTTPError(request.full_url, 503, "unavailable", {}, None)
+
+        with patch.object(self.relay.urllib.request, "urlopen", fail):
+            with self.assertRaises(urllib.error.HTTPError):
+                self.relay.scan(True)
+        self.assertFalse(Path(self.relay.STATE_PATH).exists())
+        self.scan()
+        self.assertEqual(self.sent[0][0], delivery_ids[0])
+        self.assertEqual(len(json.loads(Path(self.relay.STATE_PATH).read_text())), 1)
+
+    def test_dry_run_never_consumes_production_budget(self):
+        self.write(["runtime failure"])
+        with patch.object(self.relay.urllib.request, "urlopen") as sender:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(self.relay.scan(False), 0)
+            sender.assert_not_called()
+        self.assertFalse(Path(self.relay.STATE_PATH).exists())
+        self.scan()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_missing_and_future_receive_times_fail_closed(self):
+        for received in (None, "not-a-timestamp", float("nan"), time.time() + 3600):
+            self.write(["runtime failure"])
+            path = self.root / "logs-test.jsonl"
+            envelope = json.loads(path.read_text())
+            envelope["received"] = received
+            path.write_text(json.dumps(envelope) + "\n")
+            self.scan()
+        self.assertEqual(self.sent, [])
+
+    def test_tool_error_log_is_filtered_without_filtering_runtime_log(self):
+        self.write(["tool failure", "runtime failure"])
+        path = self.root / "logs-test.jsonl"
+        envelope = json.loads(path.read_text())
+        records = envelope["body"]["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+        records[0]["attributes"] = [{"key": "agent.tool.name", "value": {"stringValue": "bash"}}]
+        path.write_text(json.dumps(envelope) + "\n")
+        self.scan()
+        self.assertEqual([body["summary"] for _, body in self.sent], ["runtime failure"])
 
 
 if __name__ == "__main__":
