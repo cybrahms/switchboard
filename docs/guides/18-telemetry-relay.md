@@ -121,3 +121,22 @@ existing channel connections were closed: restart consumers only when they
 have no active claims, and require a new probe before declaring them connected.
 Rollback by disabling the relay job; retain its state and the existing worker
 endpoint while you repair configuration.
+
+## Limit incident volume
+
+The replacement at `~/agents/telemetry-relay.py` and PR example now:
+- excludes spans and logs carrying `agent.tool.name` (runtime errors remain eligible);
+- accepts only exports received in the last five minutes, rejecting missing,
+  nonfinite, or future receive timestamps;
+- groups service/signal/severity and normalized summary into fixed 15-minute
+  windows; numeric and long hexadecimal identifiers are normalized;
+- delivers at most eight tasks in any rolling hour using persisted delivery times.
+
+Settings: `TELEMETRY_MAX_AGE_SECONDS=300`, `TELEMETRY_GROUP_SECONDS=900`,
+`TELEMETRY_MAX_PER_HOUR=8`. Zero age/window explicitly disables those respective
+controls for fixtures or intentional replay; production should keep the defaults.
+The hourly budget applies to all deliveries, including validation probes. Budget
+exhaustion defers fresh candidates; candidates aging past five minutes are dropped.
+First delivery includes the number of distinct occurrences found in that scan.
+Later occurrences in the same window do not update the queued task. Fixed-window
+boundaries can yield two tasks close together; the rolling hourly budget still holds.

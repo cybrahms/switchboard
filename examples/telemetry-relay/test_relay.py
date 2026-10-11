@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -65,10 +66,39 @@ class RelayTests(unittest.TestCase):
     def run_relay(self, *args, **overrides):
         env = dict(os.environ, OTLP_SINK_DIR=str(self.sink),
                    TELEMETRY_STATE=str(self.state), TELEMETRY_WEBHOOK_URL=self.url,
-                   TELEMETRY_MIN_SEVERITY="ERROR")
+                   TELEMETRY_MIN_SEVERITY="ERROR", TELEMETRY_MAX_AGE_SECONDS="0",
+                   TELEMETRY_GROUP_SECONDS="0", TELEMETRY_MAX_PER_HOUR="8")
         env.update(overrides)
         return subprocess.run([sys.executable, str(RELAY), *args], env=env,
                               capture_output=True, text=True, timeout=10)
+
+    def test_production_policy_skips_history_and_groups_repeats(self):
+        old = logs(record(message="old failure")); old["received"] = time.time() - 86400
+        self.write(old, "logs-old.jsonl")
+        fresh = logs(record(timestamp="1"), record(timestamp="2")); fresh["received"] = time.time()
+        self.write(fresh)
+        options = dict(TELEMETRY_MAX_AGE_SECONDS="300", TELEMETRY_GROUP_SECONDS="900")
+        result = self.run_relay("--send", **options)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.received), 1)
+        self.assertEqual(self.received[0][1]["detail"]["occurrences"], 2)
+        fresh["body"]["resourceLogs"][0]["scopeLogs"][0]["logRecords"].append(record(timestamp="3"))
+        self.write(fresh)
+        self.assertEqual(self.run_relay("--send", **options).returncode, 0)
+        self.assertEqual(len(self.received), 1)
+
+    def test_hourly_budget_survives_restart(self):
+        self.write(logs(*(record(timestamp=str(i), message=f"failure {i}") for i in range(12))))
+        self.assertEqual(self.run_relay("--send").returncode, 0)
+        self.assertEqual(len(self.received), 8)
+        self.assertEqual(self.run_relay("--send").returncode, 0)
+        self.assertEqual(len(self.received), 8)
+
+    def test_missing_receive_timestamp_is_not_backfilled(self):
+        self.write(logs(record()))
+        result = self.run_relay("--send", TELEMETRY_MAX_AGE_SECONDS="300")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.received, [])
 
     def test_numeric_severity_overrides_text(self):
         self.write(logs(record(number=9, text="ERROR"),
@@ -109,7 +139,7 @@ class RelayTests(unittest.TestCase):
         result = self.run_relay("--send")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.received), 1)
-        self.assertIn("0 delivered; 1 already seen", result.stdout)
+        self.assertIn("0 delivered; 1 already seen or filtered", result.stdout)
 
     def test_failed_post_preserves_acknowledgements_and_retries_same_id(self):
         self.write(logs(record(timestamp="1"), record(timestamp="2")))

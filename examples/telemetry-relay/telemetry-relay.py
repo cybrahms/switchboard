@@ -5,7 +5,8 @@ The station's otlp-sink.py receives OTLP and appends one export per line to rota
 ~/.local/state/otlp-sink, compressing rotated files. This relay reads active and compressed files,
 selects error spans and logs, redacts common credential forms, and POSTs bounded telemetry
 envelopes to a Switchboard `telemetry` webhook. Stable event IDs make retries idempotent; repeated
-log messages at different timestamps remain separate events.
+failures are grouped into 15-minute windows with an eight-delivery hourly budget.
+Only exports received within five minutes are eligible; missing receive timestamps fail closed.
 
 Modes:
   --dry-run (default)  parse and print what it WOULD send; state is not advanced, nothing is POSTed
@@ -15,7 +16,10 @@ Env:
   TELEMETRY_WEBHOOK_URL  ingest URL of the switchboard telemetry webhook (required for --send)
   OTLP_SINK_DIR          where otlp-sink writes JSONL (default ~/.local/state/otlp-sink)
   TELEMETRY_STATE        path to the seen-key state file (default ~/.local/state/telemetry-relay/seen.json)
-TELEMETRY_MIN_SEVERITY  ERROR (default) or FATAL; numeric OTLP severity takes precedence
+  TELEMETRY_MIN_SEVERITY  ERROR (default) or FATAL; numeric OTLP severity takes precedence
+  TELEMETRY_MAX_AGE_SECONDS  300; reject older or undated exports (0 enables replay)
+  TELEMETRY_GROUP_SECONDS    900; group similar failures (0 disables grouping)
+  TELEMETRY_MAX_PER_HOUR     8; rolling budget persisted across scans
 
 Stdlib only, like otlp-sink. Safe to cron: it reads-only in dry-run, and in --send a bounded
 30-day state file plus Switchboard's delivery-ID dedup make retries idempotent.
@@ -29,6 +33,7 @@ import os
 import re
 import sys
 import time
+import math
 import urllib.request
 import urllib.error
 
@@ -43,6 +48,11 @@ if SEVERITY_MIN is None:
     raise ValueError("TELEMETRY_MIN_SEVERITY must be ERROR or FATAL")
 ERROR_STATUS_CODE = 2  # OTLP StatusStatusCode_ERROR
 SEEN_TTL_SECONDS = 30 * 24 * 60 * 60  # longer than the sink's 14-day source retention
+MAX_AGE = int(os.environ.get("TELEMETRY_MAX_AGE_SECONDS", "300"))
+GROUP_WINDOW = int(os.environ.get("TELEMETRY_GROUP_SECONDS", "900"))
+MAX_PER_HOUR = int(os.environ.get("TELEMETRY_MAX_PER_HOUR", "8"))
+if MAX_AGE < 0 or GROUP_WINDOW < 0 or MAX_PER_HOUR < 1:
+    raise ValueError("invalid telemetry volume settings")
 SUMMARY_LIMIT = 240
 SECRET_VALUE = re.compile(
     r"(?i)\b(password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key)\b[\"']?"
@@ -114,6 +124,8 @@ def iter_log_errors(body, source_id):
                    for a in (rl.get("resource", {}).get("attributes", []) or [])}.get("service.name", "")
         for sl in rl.get("scopeLogs", []) or []:
             for index, rec in enumerate(sl.get("logRecords", []) or []):
+                if any(a.get("key") == "agent.tool.name" for a in rec.get("attributes", []) or []):
+                    continue
                 sev_num = rec.get("severityNumber", 0) or 0
                 sev_text = (rec.get("severityText", "") or "").upper()
                 rank = severity_rank(sev_num, sev_text)
@@ -193,6 +205,11 @@ def scan(send):
     seen = load_seen()
     found = 0
     emitted = 0
+    stale = 0
+    limited = 0
+    groups = {}
+    occurrence_keys = set()
+    now = time.time()
     try:
         names = sorted(os.listdir(SINK_DIR))
     except FileNotFoundError:
@@ -226,11 +243,43 @@ def scan(send):
                     continue
                 for e in errors:
                     found += 1
-                    emitted += bool(emit(seen, e, send))
+                    received = rec.get("received")
+                    try:
+                        received = float(received)
+                    except (TypeError, ValueError):
+                        received = None
+                    if MAX_AGE and (received is None or not math.isfinite(received) or
+                                    received < now - MAX_AGE or received > now + 60):
+                        stale += 1
+                        continue
+                    if e["key"] in seen or e["key"] in occurrence_keys:
+                        continue
+                    occurrence_keys.add(e["key"])
+                    if GROUP_WINDOW:
+                        fingerprint = re.sub(r"\b[0-9a-f]{16,}\b|\b\d+\b", "#", e["summary"], flags=re.I)
+                        bucket = int((received if received is not None else now) // GROUP_WINDOW)
+                        key = stable_key("group", e["service"], e["signal"], e["severity"], fingerprint, bucket)
+                    else:
+                        key = e["key"]
+                    if key not in groups:
+                        e["key"] = key
+                        e["detail"] = dict(e["detail"], occurrences=0, windowSeconds=GROUP_WINDOW)
+                        groups[key] = e
+                    groups[key]["detail"]["occurrences"] += 1
+    for e in groups.values():
+        if e["key"] in seen:
+            continue
+        # Persisted delivery timestamps enforce the budget across runs and restarts.
+        recent = sum(now - value < 3600 for value in seen.values())
+        if recent >= MAX_PER_HOUR:
+            limited += 1
+            continue
+        emitted += bool(emit(seen, e, send))
     if send:
         save_seen(seen)
     print(f"relay: {found} matching signals; {emitted} {'delivered' if send else 'would send'}; "
-          f"{found - emitted} already seen; {len(seen)} retained IDs")
+          f"{found - emitted} already seen or filtered; {len(seen)} retained IDs; "
+          f"{stale} stale; {len(groups)} groups; {limited} budget deferred")
     return 0
 
 
