@@ -68,6 +68,17 @@ class VolumeTests(unittest.TestCase):
         self.scan()
         self.assertEqual(len(self.sent), 12)
 
+    def test_legacy_noise_does_not_starve_new_policy_runtime_alerts(self):
+        legacy = {f"trace:legacy-{i}": time.time() for i in range(25)}
+        Path(self.relay.STATE_PATH).write_text(json.dumps(legacy))
+        self.write(["runtime " + chr(65 + i) for i in range(12)])
+        self.scan()
+        self.assertEqual(len(self.sent), 8)
+        self.scan()
+        self.assertEqual(len(self.sent), 8)
+        saved = json.loads(Path(self.relay.STATE_PATH).read_text())
+        self.assertTrue(all(key in saved for key in legacy))
+
     def test_tool_failures_are_filtered_and_runtime_failure_survives(self):
         spans = [{"spanId": "tool", "name": "telemetry claim failed", "status": {"code": 2},
                   "attributes": [{"key": "agent.tool.name", "value": {"stringValue": "claim"}}]},

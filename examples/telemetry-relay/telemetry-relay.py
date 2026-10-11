@@ -270,7 +270,8 @@ def scan(send):
         if e["key"] in seen:
             continue
         # Persisted delivery timestamps enforce the budget across runs and restarts.
-        recent = sum(now - value < 3600 for value in seen.values())
+        recent = sum(now - value < 3600 for key, value in seen.items()
+                     if not GROUP_WINDOW or key.startswith("group:"))
         if recent >= MAX_PER_HOUR:
             limited += 1
             continue

@@ -85,3 +85,7 @@ Four offline regression tests pass against real scan/state paths with the HTTP
 transport mocked. All four fail against the old policy. HTTP integration tests
 were attempted but cannot bind loopback sockets under this session's sandbox.
 Live dry-run reports the filtering counts without sending or advancing state.
+
+On upgrade from the occurrence relay, old delivery IDs remain for deduplication.
+With grouping enabled, the rolling budget counts only new group deliveries;
+legacy raw-span/log IDs do not prevent runtime alerts after rollout.

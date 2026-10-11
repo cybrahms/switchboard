@@ -140,3 +140,7 @@ exhaustion defers fresh candidates; candidates aging past five minutes are dropp
 First delivery includes the number of distinct occurrences found in that scan.
 Later occurrences in the same window do not update the queued task. Fixed-window
 boundaries can yield two tasks close together; the rolling hourly budget still holds.
+
+On upgrade from the occurrence relay, old delivery IDs remain for deduplication.
+With grouping enabled, the rolling budget counts only new group deliveries;
+legacy raw-span/log IDs do not prevent runtime alerts after rollout.
