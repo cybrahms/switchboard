@@ -124,7 +124,7 @@ endpoint while you repair configuration.
 
 ## Limit incident volume
 
-The replacement at `~/agents/telemetry-relay.py` and PR example now:
+The example relay uses these defaults:
 - excludes spans and logs carrying `agent.tool.name` (runtime errors remain eligible);
 - accepts only exports received in the last five minutes, rejecting missing,
   nonfinite, or future receive timestamps;
@@ -144,3 +144,13 @@ boundaries can yield two tasks close together; the rolling hourly budget still h
 On upgrade from the occurrence relay, old delivery IDs remain for deduplication.
 With grouping enabled, the rolling budget counts only new group deliveries;
 legacy raw-span/log IDs do not prevent runtime alerts after rollout.
+
+## Multiple worker channels
+
+Some clients restrict each channel turn to its originating server's tools. Do
+not tell such a worker to drain every endpoint during every channel turn. Drain
+all inboxes on a local startup turn, and the originating inbox after its doorbell.
+Notifications from another endpoint must run in their own turn instead of being
+folded into an active turn with a different tool scope. A delivered notification
+followed by tool-not-found errors is a worker runtime failure, not proof that the
+relay failed. Verify tool access and completion with the end-to-end probe.

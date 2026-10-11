@@ -3,7 +3,7 @@
 This Python 3.9+ example turns ERROR/FATAL logs and error spans in an OTLP JSONL
 sink into Switchboard todos. It uses the standard library and runs on macOS or
 Linux. The receiver must persist exports as one JSON object per line with an
-OTLP JSON `body`, using `logs-*.jsonl` / `traces-*.jsonl` names. Rotated files
+OTLP JSON `body` and a numeric Unix-seconds `received` field, using `logs-*.jsonl` / `traces-*.jsonl` names. Rotated files
 may end in `.jsonl.gz`.
 
 See [the deployment guide](../../docs/guides/18-telemetry-relay.md) for grants,
@@ -20,11 +20,15 @@ python3 -m unittest discover -s . -p 'test_*.py' -v
 | `OTLP_SINK_DIR` | Export directory; default `~/.local/state/otlp-sink`. |
 | `TELEMETRY_WEBHOOK_URL` | Token-bearing ingress URL from `create_webhook`; required for `--send`. Keep private. |
 | `TELEMETRY_STATE` | Sender deduplication checkpoint; default `~/.local/state/telemetry-relay/seen.json`. |
+| `TELEMETRY_MAX_AGE_SECONDS` | 300; exports older than five minutes or without valid receive timestamps are skipped. Zero explicitly enables replay. |
+| `TELEMETRY_GROUP_SECONDS` | 900; similar failures share one task per fixed 15-minute window. Zero disables grouping. |
+| `TELEMETRY_MAX_PER_HOUR` | 8; persisted rolling budget for group deliveries across scans and restarts. |
 | `TELEMETRY_MIN_SEVERITY` | `ERROR` (default) or `FATAL`. Numeric log severity takes precedence. Error spans are excluded in FATAL mode. |
 
-The relay includes timestamp and content in a stable `X-Delivery-Id` and
-checkpoints each acknowledged delivery. Export retries deduplicate; the same
-message at another timestamp is a new occurrence. Compression preserves IDs
+The relay distinguishes occurrences using timestamp and content, and sends a
+stable group `X-Delivery-Id`. It checkpoints acknowledged group deliveries and
+occurrence IDs. Export retries deduplicate even across group boundaries; a later
+occurrence of the same failure is suppressed within its group window. Compression preserves IDs
 for records without timestamps. IDs are retained for 30 days; keep sink
 retention shorter than that. A lock prevents overlapping sends.
 
@@ -38,9 +42,10 @@ export or its resource attributes.
 Missing configuration or input, corrupt state, and failed HTTP delivery return
 nonzero. Exception output omits capability URLs. HTTP 429 and transient failures
 stop the current scan; the next scheduled scan retries unacknowledged IDs.
-State already checkpointed remains intact. The summary reports matching,
-delivered, and previously seen signals separately. The initial scan backfills
-retained errors; choose the queue owner and review the dry run before enabling.
+State already checkpointed remains intact. The summary reports matching signals, deliveries, filtered or previously seen
+signals, stale exports, groups, and budget deferrals. The default does not replay
+old retained exports; review the dry run before enabling. Budget-deferred signals
+are dropped if they age beyond the freshness cutoff before capacity returns.
 
 ## Deployment validator
 
@@ -54,7 +59,8 @@ python3 validate.py --vend-record /private/path/telemetry-endpoint.json
 The validator injects an OTLP error with service `telemetry-relay.validation` and
 summary `telemetry relay deployment probe <UUID>`. It does **not** run the relay.
 It waits for the scheduled job to produce exactly one todo and for the worker
-to complete it with `{"validation":"acknowledged"}`. Give the worker that probe
+to complete it with `{"validation":"acknowledged"}` (an object or JSON-encoded
+string). Give the worker that probe
 rule before running it. This is a validation event, not an incident to fix.
 `list_todos` omits payloads, so the validator uses `get_todo` on candidate IDs.
 
@@ -64,28 +70,21 @@ another. `--mcp-url` can select the same endpoint's local MCP URL; `--otlp-url`
 selects the sink's OTLP/HTTP log receiver. Credentials are read from the private
 file and never printed. A missing acknowledgement, failed todo, or duplicate
 todo returns nonzero.
-The replacement at `~/agents/telemetry-relay.py` and PR example now:
-- excludes spans and logs carrying `agent.tool.name` (runtime errors remain eligible);
-- accepts only exports received in the last five minutes, rejecting missing,
-  nonfinite, or future receive timestamps;
-- groups service/signal/severity and normalized summary into fixed 15-minute
-  windows; numeric and long hexadecimal identifiers are normalized;
-- delivers at most eight tasks in any rolling hour using persisted delivery times.
 
-Settings: `TELEMETRY_MAX_AGE_SECONDS=300`, `TELEMETRY_GROUP_SECONDS=900`,
-`TELEMETRY_MAX_PER_HOUR=8`. Zero age/window explicitly disables those respective
-controls for fixtures or intentional replay; production should keep the defaults.
-The hourly budget applies to all deliveries, including validation probes. Budget
-exhaustion defers fresh candidates; candidates aging past five minutes are dropped.
-First delivery includes the number of distinct occurrences found in that scan.
-Later occurrences in the same window do not update the queued task. Fixed-window
-boundaries can yield two tasks close together; the rolling hourly budget still holds.
+## Volume policy
 
-Four offline regression tests pass against real scan/state paths with the HTTP
-transport mocked. All four fail against the old policy. HTTP integration tests
-were attempted but cannot bind loopback sockets under this session's sandbox.
-Live dry-run reports the filtering counts without sending or advancing state.
+Structured tool-call errors (`agent.tool.name`) are excluded from both logs and
+spans. Runtime failures remain eligible. Failure groups include service, signal,
+severity, and normalized summary; numeric and long hexadecimal identifiers are
+normalized. The first task includes the distinct occurrence count in that scan.
+Later occurrences in the same window do not update it. A fixed-window boundary
+can yield two nearby tasks, while the rolling hourly budget remains enforced.
 
-On upgrade from the occurrence relay, old delivery IDs remain for deduplication.
-With grouping enabled, the rolling budget counts only new group deliveries;
-legacy raw-span/log IDs do not prevent runtime alerts after rollout.
+Old raw-span/log IDs remain for deduplication when upgrading. With grouping
+enabled, only new group delivery timestamps count toward the new policy's budget;
+legacy deliveries do not block runtime alerts on rollout. Occurrence checkpoints
+are separate from delivery timestamps. Validation probes consume the same budget.
+
+Run the tests before installing and verify the installed source matches the
+reviewed source. Receiver health alone does not prove worker access: run the
+validator against the actual scheduled job and inspect its completion receipt.
