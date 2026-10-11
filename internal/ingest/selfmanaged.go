@@ -152,11 +152,12 @@ func (i *Ingest) SelfManaged(w http.ResponseWriter, r *http.Request) {
 	// Token-trust generic and telemetry webhooks honour the sender's own X-Delivery-Id / Webhook-Id
 	// (genericDeliveryID): retries collapse even when the body is re-serialized, and the key is bounded.
 	var deliveryID string
-	if wh.SourceType == routing.SourceCairn {
+	switch wh.SourceType {
+	case routing.SourceCairn:
 		deliveryID = cairnEventID(body)
-	} else if wh.SourceType == "telemetry" {
+	case "telemetry":
 		deliveryID = genericDeliveryID(r.Header)
-	} else {
+	default:
 		deliveryID = r.Header.Get("X-GitHub-Delivery")
 		if deliveryID == "" {
 			deliveryID = r.Header.Get("X-Gitea-Delivery")
